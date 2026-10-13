@@ -1,8 +1,18 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy.orm import Session
+from database import SessionLocal, engine
+from models import Task
 
 app = FastAPI()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 class TaskCreate(BaseModel):
     title: str
@@ -21,14 +31,11 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     completed: Optional[bool] = None
 
-tasks = []
-next_task_id = 1
-
 @app.get("/tasks/{id}", response_model=TaskResponse)
-def return_task(id: int):
-    for task in tasks:
-        if task.id == id:
-            return task
+def return_task(id: int, db: Session = Depends(get_db)):
+    query = db.query(Task).filter(Task.id == id).first()
+    if query:
+        return query
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.get("/")
@@ -36,41 +43,49 @@ def read_root():
     return {"message": "Hello from FastAPI"}
 
 @app.get("/tasks", response_model=list[TaskResponse])
-def read_tasks(completed: Optional[bool] = None):
+def read_tasks(completed: Optional[bool] = None, db: Session = Depends(get_db)):
+    query = db.query(Task)
     if completed is not None:
-        return [task for task in tasks if task.completed == completed]
-    return tasks
+        query = query.filter(Task.completed == completed)
+    return query.all()
 
 @app.post("/tasks", status_code=201, response_model=TaskCreatedResponse)
-def create_task(task: TaskCreate):
-    global next_task_id
-    new_task = TaskResponse(id=next_task_id, title=task.title, completed=task.completed)
-    tasks.append(new_task)
-    next_task_id += 1
+def create_task(task: TaskCreate, db: Session = Depends(get_db)):
+    new_task = Task(**task.dict())
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
     return {"message": "Task created successfully", "task": new_task}
 
 @app.put("/tasks/{id}", response_model=TaskResponse)
-def update_task(id: int, task: TaskCreate):
-    for i, existing_task in enumerate(tasks):
-        if existing_task.id == id:
-            updated_task = TaskResponse(id=id, title=task.title, completed=task.completed)
-            tasks[i] = updated_task
-            return updated_task
+def update_task(id: int, task: TaskCreate, db: Session = Depends(get_db)):
+    query = db.query(Task).filter(Task.id == id).first()
+    if query:
+        query.title = task.title
+        query.completed = task.completed
+        db.commit()
+        db.refresh(query)
+        return query
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.patch("/tasks/{id}", response_model=TaskResponse)
-def patch_task(id: int, task: TaskUpdate):
-    for i, existing_task in enumerate(tasks):
-        if existing_task.id == id:
-            updated_task = existing_task.model_copy(update=task.model_dump(exclude_unset=True))
-            tasks[i] = updated_task
-            return updated_task
+def patch_task(id: int, task: TaskUpdate, db: Session = Depends(get_db)):
+    query = db.query(Task).filter(Task.id == id).first()
+    if query:
+        if task.title is not None:
+            query.title = task.title
+        if task.completed is not None:
+            query.completed = task.completed
+        db.commit()
+        db.refresh(query)
+        return query
     raise HTTPException(status_code=404, detail="Task not found")
 
 @app.delete("/tasks/{id}", status_code=204)
-def delete_task(id: int):
-    for i, task in enumerate(tasks):
-        if task.id == id:
-            del tasks[i]
-            return
+def delete_task(id: int, db: Session = Depends(get_db)):
+    query = db.query(Task).filter(Task.id == id).first()
+    if query:
+        db.delete(query)
+        db.commit()
+        return
     raise HTTPException(status_code=404, detail="Task not found")
